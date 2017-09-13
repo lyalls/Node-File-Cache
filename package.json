@@ -1,0 +1,27 @@
+{
+  "name": "node-file-cache",
+  "main": "index.js",
+  "version": "0.0.1",
+  "scripts": {
+    "test": "node ./test"
+  },
+  "devDependencies": {
+    "eslint": "latest",
+    "eslint-config-airbnb": "latest",
+    "eslint-plugin-import": "latest",
+    "eslint-plugin-jsx-a11y": "latest",
+    "eslint-plugin-react": "latest",
+    "mocha": "^3.4.2",
+    "pm2": "^2.6.1",
+    "querystring": "^0.2.0",
+    "request": "^2.79.0",
+    "should": "^11.2.1"
+  },
+  "dependencies": {},
+  "repository": "git@github.com:lyalls/Node-File-Cache.git",
+  "author": {
+    "name": "Lyall Sun",
+    "email": "lyall.sunlin@gmail.com"
+  },
+  "license": "MIT"
+}
