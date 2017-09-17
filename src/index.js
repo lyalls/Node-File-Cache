@@ -5,11 +5,10 @@
 const FS = require('fs');
 const PATH = require('path');
 const UTIL = require('util');
-const { packageName } = require('../package.json');
-
-const DL = UTIL.debuglog(packageName);
+const { name } = require('../package.json');
+const DL = UTIL.debuglog(name);
 const debuglog = (...params) => {
-    DL(`[${packageName}]`, ...params);
+    DL(`[${new Date()}]`, ...params);
 };
 
 const mkdir = (dirpath) => {
@@ -37,12 +36,20 @@ const parseProcQueueItem = (itemName) => {
 
 const safeKey = (key) => {
     if (!key || typeof key !== 'string') return null;
-    return key.replace(/\//g, '|||').replace(/#/g, '___').replace(/&/g, ':::');
+    return key
+            .replace(/\//g, '|||')
+            .replace(/#/g, '___')
+            .replace(/&/g, ':::')
+            .replace(/ /g, '@@@');
 }
 
 const originalKey = (safeKey) => {
     if (!safeKey || typeof safeKey !== 'string') return null;
-    return safeKey.replace(/___/g, '#').replace(/\|\|\|/g, '\\').replace(/:::/g, '&');
+    return safeKey
+            .replace(/___/g, '#')
+            .replace(/\|\|\|/g, '\\')
+            .replace(/:::/g, '&')
+            .replace(/@@@/g, ' ');
 }
 
 class Cache {
@@ -78,6 +85,7 @@ class Cache {
                     self.options.workdir,
                     self.options.procHeartDir,
                     self.options.procQueueDir,
+                    self.options.dataDir,
                 ].forEach(dir => mkdir(dir));
                 // Start heartbeat
                 self.heartbeat();
@@ -96,24 +104,25 @@ class Cache {
     // Operation queue handlers
     queuedirHandler(type, filename) {
         const item = parseProcQueueItem(filename);
-        if (item.processTag !== this.processTag) {
-            this.processJobQueue();
-        }
+        this.processJobQueue({ fromNotification: true });
     }
 
-    processJobQueue({ isInitialization = false }) {
+    processJobQueue({ fromNotification = false }) {
         // 
         // No matter what kind of job
         // The process must queue itself to get control of the storage
         // If there is no other processes alive, then no need to wait
         // If Write a message into the process queue
-        if (isInitialization) {
-            // Enqueue the process
-            FS.writeFileSync(PATH.join(this.options.procQueueDir, `${Date.now()}-${this.options.processTag}`), '1');
+
+        // Enqueue the process
+        let processQueueFile = null;
+        if (!fromNotification) {
+            processQueueFile = PATH.join(this.options.procQueueDir, `${Date.now()}-${this.options.processTag}`);
+            FS.writeFileSync(processQueueFile, '1');
         }
         // Read the queue to check whether current process is at the top
         const procQueue = FS.readdirSync(this.options.procQueueDir);
-        if (procQueue.length > 1) {
+        if (procQueue.length > 0) {
             let top = 0;
             let min = -1;
             // No need to sort, the top one item is ok
@@ -126,28 +135,49 @@ class Cache {
             }
             const topProc = procQueue[top];
             if (topProc.processTag === this.options.processTag) {
+                processQueueFile = PATH.join(
+                    this.options.procQueueDir, 
+                    `${topProc.timestamp}-${topProc.processTag}`
+                );
                 // The current process is at the top of the queue
-                // Process the job
-                const job = this.dequeue();
-                const self = this;
-                job.callback = (error, response) => {
-                    // When the job finished, remove the process queue
+                const removeQueueFile = () => {
                     try {
-                        FS.unlinkSync(PATH.join(self.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`));
+                        FS.unlinkSync(processQueueFile);
                     } catch (e) {
                         debuglog(
                             'Error when removing queue item from process queue dir:',
-                            PATH.join(self.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`),
+                            processQueueFile,
                             e,
                         );
                     }
-                    // invoke the callback of the job
-                    job.callback(error, response);
-                };
-                // TODO: Do the job
-                this.processJob(job);
+                }
+                if (this.queue.length > 0) {
+                    // Process the job
+                    const job = this.dequeue();
+                    const self = this;
+                    const cb = job.callback;
+                    job.callback = (error, response) => {
+                        // Dequeue the process
+                        // When the job finished, remove the process queue
+                        removeQueueFile(); 
+                        // invoke the callback of the job
+                        cb(error, response);
+                    };
+                    // Do the job
+                    this.processJob(job);
+                } else {
+                    removeQueueFile();
+                }
             }
         }
+    }
+
+    // Return the real ttl number
+    parseTtl(ttl) {
+        if (!ttl) return this.options.maxTTL;
+        if (typeof ttl === 'string') ttl = Number(ttl);
+        if (Number.isNaN(ttl) || ttl < 0) return this.options.maxTTL;
+        else return Math.min(ttl, this.options.maxTTL);
     }
 
     // Read/write job
@@ -160,19 +190,23 @@ class Cache {
         try {
             switch (job.type) {
                 case 'GET':
-                    item = JSON.parse(FS.readFileSync(filepath));
-                    if (Date.now() - Number(item.arriveAt) > (Number(item.ttl) || this.options.maxTTL)) {
-                        // Remove the data from disk
-                        FS.unlinkSync(filepath);
-                        job.callback(null, null);
+                    if (FS.existsSync(filepath)) {
+                        item = JSON.parse(FS.readFileSync(filepath));
+                        if (Date.now() - Number(item.arriveAt) > this.parseTtl(item.ttl)) {
+                            // Remove the data from disk
+                            FS.unlinkSync(filepath);
+                            job.callback(null, null);
+                        } else {
+                            job.callback(null, item.data);
+                        }
                     } else {
-                        job.callback(null, item.data);
+                        job.callback(null, null);
                     }
                     break;
                 case 'SET':
                     item = {
                         arriveAt: job.arriveAt,
-                        data : item.value,
+                        data : job.value,
                         processTag: this.processTag,
                     };
                     if (typeof job.ttl !== 'undefined') {
@@ -182,7 +216,7 @@ class Cache {
                     job.callback(null, true);
                     break;
                 case 'RESET':
-                    FS.unlinkSync(filepath);
+                    if (FS.existsSync(filepath)) FS.unlinkSync(filepath);
                     job.callback(null, true);
                     break;
                 default:
@@ -229,7 +263,7 @@ class Cache {
                 const filepath = PATH.join(self.options.dataDir, itemKey);
                 const data = JSON.parse(FS.readFileSync(filepath));
                 if (!aliveprocs[data.processTag]) {
-                    if (Date.now() - Number(data.arriveAt) > (Number(data.ttl) || self.options.maxTTL)) {
+                    if (Date.now() - Number(data.arriveAt) > this.parseTtl(data.ttl)) {
                        FS.unlinkSync(filepath); 
                     }
                 }
@@ -260,7 +294,7 @@ class Cache {
     // File cache queue operations
     enqueue(job) {
         this.queue.push(job);
-        this.processJobQueue();
+        this.processJobQueue({fromNotification: false});
     }
 
     dequeue() {
@@ -269,9 +303,9 @@ class Cache {
 
     // Cache interfaces
     async get(key) {
-        if (this.useMemCache && typeof this.cache[key] !== 'undefined') {
+        if (this.options.useMemCache && typeof this.cache[key] !== 'undefined') {
             return this.cache[key];
-        } else if (this.useFileCache) {
+        } else if (this.options.useFileCache) {
             const self = this;
             return new Promise((resolve, reject) => {
                 const job = {
@@ -290,7 +324,7 @@ class Cache {
     }
 
     async set(key, value, ttl) {
-        if (this.useFileCache) {
+        if (this.options.useFileCache) {
             const self = this;
             return new Promise((resolve, reject) => {
                 const job = {
@@ -302,7 +336,7 @@ class Cache {
                     callback: (error, feedback) => {
                         if (error) reject(error);
                         else {
-                            if (self.useMemCache) {
+                            if (self.options.useMemCache) {
                                 self.cache[key] = value;
                             }
                             if (typeof ttl === 'number' && ttl > 0) {
@@ -310,13 +344,14 @@ class Cache {
                                     await self.reset(key);
                                 }, ttl);
                             }
+                            debuglog(`[${key}] is cached in file`);
                             resolve(feedback);
                         }
                     },
                 };
                 self.enqueue(job);
             });
-        } else if (this.useMemCache) {
+        } else if (this.options.useMemCache) {
             this.cache[key] = value;
             if (typeof ttl === 'number' && ttl > 0) {
                 const self = this;
@@ -329,11 +364,11 @@ class Cache {
     }
 
     async reset(key) {
-        if (this.useMemCache && typeof this.cache[key] !== 'undefined') {
+        if (this.options.useMemCache && typeof this.cache[key] !== 'undefined') {
             delete this.cache[key];
         }
 
-        if (this.useFileCache) {
+        if (this.options.useFileCache) {
             const self = this;
             return new Promise((resolve, reject) => {
                 const job = {
