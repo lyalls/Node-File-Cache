@@ -35,6 +35,16 @@ const parseProcQueueItem = (itemName) => {
     };
 };
 
+const safeKey = (key) => {
+    if (!key || typeof key !== 'string') return null;
+    return key.replace(/\//g, '|||').replace(/#/g, '___').replace(/&/g, ':::');
+}
+
+const originalKey = (safeKey) => {
+    if (!safeKey || typeof safeKey !== 'string') return null;
+    return safeKey.replace(/___/g, '#').replace(/\|\|\|/g, '\\').replace(/:::/g, '&');
+}
+
 class Cache {
     constructor(options) {
         this.options = Object.assign({
@@ -43,6 +53,7 @@ class Cache {
             workdir: PATH.join(process.cwd(), 'tmp/cache'),
             processTag: `${Date.now()}.${process.pid}`,
             heartbeatTimeout: 1000, // In milliseconds
+            maxTTL: 86400 * 1000 * 7, // Max ttl of data produced by dead processes
         }, options);
         this.options.procHeartDir = PATH.join(this.options.workdir, 'proc');
         this.options.procQueueDir = PATH.join(this.options.workdir, 'queue');
@@ -50,9 +61,9 @@ class Cache {
         this.options.heartbeatPath = PATH.join(this.options.procHeartDir, this.options.processTag);
         this.options.heartbeatInterval = Math.round(this.options.heartbeatTimeout / 3);
 
-        this.initialized = false;
         this.heartbeatInstance = null;
         this.queue = null;
+        this.isProcessingQueue = false;
         this.cache = {};
     }
 
@@ -97,6 +108,7 @@ class Cache {
         // If there is no other processes alive, then no need to wait
         // If Write a message into the process queue
         if (isInitialization) {
+            // Enqueue the process
             FS.writeFileSync(PATH.join(this.options.procQueueDir, `${Date.now()}-${this.options.processTag}`), '1');
         }
         // Read the queue to check whether current process is at the top
@@ -104,6 +116,7 @@ class Cache {
         if (procQueue.length > 1) {
             let top = 0;
             let min = -1;
+            // No need to sort, the top one item is ok
             for (let i = 0; i < procQueue.length; i++) {
                 procQueue[i] = parseProcQueueItem(procQueue[i]);
                 if (min < 0 || procQueue[i].timestamp < min) {
@@ -113,16 +126,18 @@ class Cache {
             }
             const topProc = procQueue[top];
             if (topProc.processTag === this.options.processTag) {
+                // The current process is at the top of the queue
                 // Process the job
                 const job = this.dequeue();
+                const self = this;
                 job.callback = (error, response) => {
                     // When the job finished, remove the process queue
                     try {
-                        FS.unlinkSync(PATH.join(this.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`));
+                        FS.unlinkSync(PATH.join(self.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`));
                     } catch (e) {
                         debuglog(
                             'Error when removing queue item from process queue dir:',
-                            PATH.join(this.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`),
+                            PATH.join(self.options.procQueueDir, `${topProc.timestamp}-${topProc.processTag}`),
                             e,
                         );
                     }
@@ -130,9 +145,52 @@ class Cache {
                     job.callback(error, response);
                 };
                 // TODO: Do the job
-            } else {
-                // TODO: Wait for the process queue notification
+                this.processJob(job);
             }
+        }
+    }
+
+    // Read/write job
+    processJob(job) {
+        // Job item format: { type: 'GET/SET/RESET', key, value, ttl, arriveAt, callback }
+        // data file name format: { arriveAt, data: {}, ttl, processTag }
+        if (!job || typeof job !== 'object' || !job.type) return;
+        let filepath = PATH.join(this.options.dataDir, safeKey(job.key));
+        let item = null;
+        try {
+            switch (job.type) {
+                case 'GET':
+                    item = JSON.parse(FS.readFileSync(filepath));
+                    if (Date.now() - Number(item.arriveAt) > (Number(item.ttl) || this.options.maxTTL)) {
+                        // Remove the data from disk
+                        FS.unlinkSync(filepath);
+                        job.callback(null, null);
+                    } else {
+                        job.callback(null, item.data);
+                    }
+                    break;
+                case 'SET':
+                    item = {
+                        arriveAt: job.arriveAt,
+                        data : item.value,
+                        processTag: this.processTag,
+                    };
+                    if (typeof job.ttl !== 'undefined') {
+                        item.ttl = job.ttl;
+                    }
+                    FS.writeFileSync(filepath, JSON.stringify(item));
+                    job.callback(null, true);
+                    break;
+                case 'RESET':
+                    FS.unlinkSync(filepath);
+                    job.callback(null, true);
+                    break;
+                default:
+                    job.callback(`Unknown type of cache operation: ${job.type}`);
+                    break;
+            }
+        } catch(e) {
+            job.callback(e);
         }
     }
 
@@ -140,6 +198,7 @@ class Cache {
     healthCheck() {
         try {
             const procs = FS.readdirSync(this.options.procHeartDir);
+            const self = this;
             const aliveprocs = {};
             if (Array.isArray(procs) && procs.length > 0) {
                 const self = this;
@@ -157,7 +216,6 @@ class Cache {
             // Clear dead/illegal processes from the queue
             const queue = FS.readdirSync(this.options.procQueueDir);
             if (Array.isArray(queue) && queue.length > 0) {
-                const self = this;
                 queue.forEach((job) => {
                     const processTag = job.split('-')[1];
                     if (!aliveprocs[processTag]) {
@@ -165,6 +223,17 @@ class Cache {
                     }
                 });
             }
+            // Clear data produced by dead processes
+            const datalist = FS.readdirSync(this.options.dataDir);
+            datalist.forEach(itemKey => {
+                const filepath = PATH.join(self.options.dataDir, itemKey);
+                const data = JSON.parse(FS.readFileSync(filepath));
+                if (!aliveprocs[data.processTag]) {
+                    if (Date.now() - Number(data.arriveAt) > (Number(data.ttl) || self.options.maxTTL)) {
+                       FS.unlinkSync(filepath); 
+                    }
+                }
+            })
         } catch (e) {
             debuglog('Error when checking health', e);
         }
@@ -188,13 +257,10 @@ class Cache {
         return this.heartbeatInstance;
     }
 
-    // File change handler
-
-
     // File cache queue operations
     enqueue(job) {
         this.queue.push(job);
-        this.processJobQueue({ isInitialization: true });
+        this.processJobQueue();
     }
 
     dequeue() {
