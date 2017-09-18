@@ -6,6 +6,7 @@ const FS = require('fs');
 const PATH = require('path');
 const UTIL = require('util');
 const { name } = require('../package.json');
+
 const DL = UTIL.debuglog(name);
 const debuglog = (...params) => {
     DL(`[${new Date()}]`, ...params);
@@ -37,20 +38,20 @@ const parseProcQueueItem = (itemName) => {
 const safeKey = (key) => {
     if (!key || typeof key !== 'string') return null;
     return key
-            .replace(/\//g, '|||')
-            .replace(/#/g, '___')
-            .replace(/&/g, ':::')
-            .replace(/ /g, '@@@');
-}
+        .replace(/\//g, '|||')
+        .replace(/#/g, '___')
+        .replace(/&/g, ':::')
+        .replace(/ /g, '@@@');
+};
 
 const originalKey = (safeKey) => {
     if (!safeKey || typeof safeKey !== 'string') return null;
     return safeKey
-            .replace(/___/g, '#')
-            .replace(/\|\|\|/g, '\\')
-            .replace(/:::/g, '&')
-            .replace(/@@@/g, ' ');
-}
+        .replace(/___/g, '#')
+        .replace(/\|\|\|/g, '\\')
+        .replace(/:::/g, '&')
+        .replace(/@@@/g, ' ');
+};
 
 class Cache {
     constructor(options) {
@@ -102,8 +103,8 @@ class Cache {
     }
 
     // Operation queue handlers
-    queuedirHandler(type, filename) {
-        const item = parseProcQueueItem(filename);
+    queuedirHandler(/* type, filename */) {
+        // const item = parseProcQueueItem(filename);
         this.processJobQueue({ fromNotification: true });
     }
 
@@ -136,8 +137,8 @@ class Cache {
             const topProc = procQueue[top];
             if (topProc.processTag === this.options.processTag) {
                 processQueueFile = PATH.join(
-                    this.options.procQueueDir, 
-                    `${topProc.timestamp}-${topProc.processTag}`
+                    this.options.procQueueDir,
+                    `${topProc.timestamp}-${topProc.processTag}`,
                 );
                 // The current process is at the top of the queue
                 const removeQueueFile = () => {
@@ -150,16 +151,15 @@ class Cache {
                             e,
                         );
                     }
-                }
+                };
                 if (this.queue.length > 0) {
                     // Process the job
                     const job = this.dequeue();
-                    const self = this;
                     const cb = job.callback;
                     job.callback = (error, response) => {
                         // Dequeue the process
                         // When the job finished, remove the process queue
-                        removeQueueFile(); 
+                        removeQueueFile();
                         // invoke the callback of the job
                         cb(error, response);
                     };
@@ -175,9 +175,10 @@ class Cache {
     // Return the real ttl number
     parseTtl(ttl) {
         if (!ttl) return this.options.maxTTL;
-        if (typeof ttl === 'string') ttl = Number(ttl);
-        if (Number.isNaN(ttl) || ttl < 0) return this.options.maxTTL;
-        else return Math.min(ttl, this.options.maxTTL);
+        let ttlNum = ttl;
+        if (typeof ttl === 'string') ttlNum = Number(ttl);
+        if (Number.isNaN(ttlNum) || ttlNum < 0) return this.options.maxTTL;
+        return Math.min(ttlNum, this.options.maxTTL);
     }
 
     // Read/write job
@@ -185,45 +186,45 @@ class Cache {
         // Job item format: { type: 'GET/SET/RESET', key, value, ttl, arriveAt, callback }
         // data file name format: { arriveAt, data: {}, ttl, processTag }
         if (!job || typeof job !== 'object' || !job.type) return;
-        let filepath = PATH.join(this.options.dataDir, safeKey(job.key));
+        const filepath = PATH.join(this.options.dataDir, safeKey(job.key));
         let item = null;
         try {
             switch (job.type) {
-                case 'GET':
-                    if (FS.existsSync(filepath)) {
-                        item = JSON.parse(FS.readFileSync(filepath));
-                        if (Date.now() - Number(item.arriveAt) > this.parseTtl(item.ttl)) {
-                            // Remove the data from disk
-                            FS.unlinkSync(filepath);
-                            job.callback(null, null);
-                        } else {
-                            job.callback(null, item.data);
-                        }
-                    } else {
+            case 'GET':
+                if (FS.existsSync(filepath)) {
+                    item = JSON.parse(FS.readFileSync(filepath));
+                    if (Date.now() - Number(item.arriveAt) > this.parseTtl(item.ttl)) {
+                        // Remove the data from disk
+                        FS.unlinkSync(filepath);
                         job.callback(null, null);
+                    } else {
+                        job.callback(null, item.data);
                     }
-                    break;
-                case 'SET':
-                    item = {
-                        arriveAt: job.arriveAt,
-                        data : job.value,
-                        processTag: this.processTag,
-                    };
-                    if (typeof job.ttl !== 'undefined') {
-                        item.ttl = job.ttl;
-                    }
-                    FS.writeFileSync(filepath, JSON.stringify(item));
-                    job.callback(null, true);
-                    break;
-                case 'RESET':
-                    if (FS.existsSync(filepath)) FS.unlinkSync(filepath);
-                    job.callback(null, true);
-                    break;
-                default:
-                    job.callback(`Unknown type of cache operation: ${job.type}`);
-                    break;
+                } else {
+                    job.callback(null, null);
+                }
+                break;
+            case 'SET':
+                item = {
+                    arriveAt: job.arriveAt,
+                    data: job.value,
+                    processTag: this.processTag,
+                };
+                if (typeof job.ttl !== 'undefined') {
+                    item.ttl = job.ttl;
+                }
+                FS.writeFileSync(filepath, JSON.stringify(item));
+                job.callback(null, true);
+                break;
+            case 'RESET':
+                if (FS.existsSync(filepath)) FS.unlinkSync(filepath);
+                job.callback(null, true);
+                break;
+            default:
+                job.callback(`Unknown type of cache operation: ${job.type}`);
+                break;
             }
-        } catch(e) {
+        } catch (e) {
             job.callback(e);
         }
     }
@@ -235,7 +236,6 @@ class Cache {
             const self = this;
             const aliveprocs = {};
             if (Array.isArray(procs) && procs.length > 0) {
-                const self = this;
                 procs.forEach((processTag) => {
                     const procheart = PATH.join(self.options.procHeartDir, processTag);
                     const timestamp = Number(FS.readFileSync(procheart));
@@ -259,15 +259,15 @@ class Cache {
             }
             // Clear data produced by dead processes
             const datalist = FS.readdirSync(this.options.dataDir);
-            datalist.forEach(itemKey => {
+            datalist.forEach((itemKey) => {
                 const filepath = PATH.join(self.options.dataDir, itemKey);
                 const data = JSON.parse(FS.readFileSync(filepath));
                 if (!aliveprocs[data.processTag]) {
                     if (Date.now() - Number(data.arriveAt) > this.parseTtl(data.ttl)) {
-                       FS.unlinkSync(filepath); 
+                        FS.unlinkSync(filepath);
                     }
                 }
-            })
+            });
         } catch (e) {
             debuglog('Error when checking health', e);
         }
@@ -294,7 +294,7 @@ class Cache {
     // File cache queue operations
     enqueue(job) {
         this.queue.push(job);
-        this.processJobQueue({fromNotification: false});
+        this.processJobQueue({ fromNotification: false });
     }
 
     dequeue() {
