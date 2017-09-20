@@ -54,6 +54,7 @@ Get the value of `key`
 
 ### cache.set(key, value[, ttl])
 Set value for `key`
+
 ttl: time to live, number in milliseconds, omit or 0 or -1 for max ttl
 
 ### cache.reset(key)
@@ -64,16 +65,19 @@ Return an array contain all `keys`
 
 ### cache.append(key, value[, { initialValue = [], ttl }])
 Append the value at the end of an array, or add a pair of property and value for an object.
+
 Using `initialValue` to indicate the original type, `initialValue` will be used as the initial array or object, when the `key` does not exist
 
 ### cache.remove(key, item[, { type = 'index', match = 'first', length = 1 }])
 Remove an item from an array, or a property of an object
+
 When the target of the `key` is an array, the item could be an element of the array, or an index to indicate the location of the element, depends on the value of `type`, which could be `index` or `item`
+
 When the `type` value is `index`, `item` and `length` are used as the parameters of `Array.splice(index, length)`;
+
 When the `type` value is `item`, `match` indicate the match mode. If the match mode is `first`, it will remove the first element which match the value of `item`; if is `all`, it will remove all the matched elements.
 
 # LICENSE
-### MIT
-### PLUS: Buy the author a bottle of beer in the nearest bar if you meet him
+### MIT, plus, "Buy the author a bottle of beer in the nearest bar if you meet him"
 
-Enjoy!
+# Enjoy!
