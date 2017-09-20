@@ -1,7 +1,7 @@
 {
   "name": "node-cache-in-file",
   "main": "index.js",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "scripts": {
     "debugOne": "node ./debug/singleThread",
     "debug": "pm2 flush && pm2 kill && pm2 start pm2-app.config.js --only debug && pm2 logs",
@@ -20,7 +20,15 @@
     "request": "^2.79.0",
     "should": "^11.2.1"
   },
-  "keywords": ["cache", "file", "multi-processes", "competition", "simultaneity", "multi-threads", "disk"],
+  "keywords": [
+    "cache",
+    "file",
+    "multi-processes",
+    "competition",
+    "simultaneity",
+    "multi-threads",
+    "disk"
+  ],
   "dependencies": {},
   "repository": "git@github.com:lyalls/Node-File-Cache.git",
   "author": {
