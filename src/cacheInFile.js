@@ -16,20 +16,20 @@ const safeKey = (key) => {
         .replace(/ /g, '@@@');
 };
 
-// const originalKey = (safeKey) => {
-//     if (!safeKey || typeof safeKey !== 'string') return null;
-//     return safeKey
-//         .replace(/___/g, '#')
-//         .replace(/\|\|\|/g, '\\')
-//         .replace(/:::/g, '&')
-//         .replace(/@@@/g, ' ');
-// };
+const originalKey = (safeKey) => {
+    if (!safeKey || typeof safeKey !== 'string') return null;
+    return safeKey
+        .replace(/___/g, '#')
+        .replace(/\|\|\|/g, '/')
+        .replace(/:::/g, '&')
+        .replace(/@@@/g, ' ');
+};
 
 class CacheInFile {
     constructor(options) {
         this.options = Object.assign({
             workdir: PATH.join(process.cwd(), 'tmp'),
-            useMemCache: true,
+            useMemCache: false,
             useFileCache: true,
             maxTTL: 86400 * 1000 * 7, // Max ttl of data produced by dead processes
         }, options);
@@ -103,9 +103,7 @@ class CacheInFile {
 
     // Cache interfaces
     async get(key) {
-        if (this.options.useMemCache && typeof this.cache[key] !== 'undefined') {
-            return this.cache[key];
-        } else if (this.options.useFileCache) {
+        if (this.options.useFileCache) {
             const self = this;
             const filepath = this.keypath(key);
             return new Promise((resolve, reject) => {
@@ -116,8 +114,12 @@ class CacheInFile {
                         if (Date.now() - Number(item.arriveAt) > self.parseTtl(item.ttl)) {
                             // Remove the data from disk
                             FS.unlinkSync(filepath);
+                            if (typeof self.cache[key] !== 'undefined') {
+                                delete self.cache[key];
+                            }
                             resolve(null);
                         } else {
+                            self.cache[key] = item.data;
                             resolve(item.data);
                         }
                     } else {
@@ -126,6 +128,8 @@ class CacheInFile {
                 };
                 self.operationQueue.enqueue(callback);
             });
+        } else if (this.options.useMemCache && typeof this.cache[key] !== 'undefined') {
+            return this.cache[key];
         }
         return null;
     }
@@ -152,12 +156,7 @@ class CacheInFile {
                         try {
                             FS.writeFileSync(filepath, JSON.stringify(item));
                             // prepare reset
-                            const timeout = Number(ttl);
-                            if (!Number.isNaN(timeout) && timeout > 0) {
-                                setTimeout(async () => {
-                                    await self.reset(key);
-                                }, timeout);
-                            }
+                            self.setTimeToLiveForKey(key, ttl);
                             debuglog(`[${key}] is cached in file`);
                             resolve(true);
                         } catch (e) {
@@ -169,14 +168,19 @@ class CacheInFile {
             });
         } else if (this.options.useMemCache) {
             this.cache[key] = value;
-            if (typeof ttl === 'number' && ttl > 0) {
-                const self = this;
-                setTimeout(async () => {
-                    await self.reset(key);
-                }, ttl);
-            }
+            this.setTimeToLiveForKey(key, ttl);
         }
-        return true;
+        return false;
+    }
+
+    setTimeToLiveForKey(key, ttl) {
+        const self = this;
+        const timeout = Number(ttl);
+        if (!Number.isNaN(timeout) && timeout > 0) {
+            setTimeout(async () => {
+                await self.reset(key);
+            }, timeout);
+        }
     }
 
     async reset(key) {
@@ -195,6 +199,7 @@ class CacheInFile {
                             if (FS.existsSync(filepath)) {
                                 FS.unlinkSync(filepath);
                             }
+                            resolve(true);
                         } catch (e) {
                             reject(e);
                         }
@@ -206,31 +211,173 @@ class CacheInFile {
         return true;
     }
 
+    async keys() {
+        if (this.options.useFileCache) {
+            const self = this;
+            return new Promise((resolve, reject) => {
+                const callback = (error) => {
+                    if (error) reject(error);
+                    else {
+                        try {
+                            const keysOnDisk = FS.readdirSync(self.options.dataDir);
+                            const keys = [];
+                            (keysOnDisk || []).forEach((item) => {
+                                if (item !== '.' && item !== '..') {
+                                    keys.push(originalKey(item));
+                                }
+                            });
+                            resolve(keys);
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                };
+                self.operationQueue.enqueue(callback);
+            });
+        } else if (this.options.useMemCache) {
+            return Object.keys(this.cache);
+        }
+        return null;
+    }
+
     // Append an object at the end of an array
     // or add a property for an object
     // using initial value to indicate the original type
     // it could be an object, or an array both are ok
     // default using [] if initial value is omited
-    async append(key, value, { initialValue = [], ttl }) {
-        if (this.options.useMemCache) {
-            if (typeof this.cache[key] === 'undefined') {
-                let newValue = null;
-                if (Array.isArray(initialValue)) {
-                    newValue = [];
-                    Array.prototype.push.apply(newValue, initialValue);
-                    newValue.push(value);
-                } else if (typeof initialValue === 'object' && typeof value === 'object') {
-                    newValue = {};
-                    Object.assign(newValue, initialValue, value);
-                }
-                this.cache[key] = newValue;
-                const self = this;
-                // const 
-                // setTimeout(async() => {
-
-                // });
+    async append(key, value, { initialValue = [], ttl } = {}) {
+        function composeNewValue(initVal) {
+            let newValue = null;
+            if (Array.isArray(initVal)) {
+                newValue = [];
+                Array.prototype.push.apply(newValue, initVal);
+                newValue.push(value);
+            } else if (typeof initVal === 'object' && typeof value === 'object') {
+                newValue = {};
+                Object.assign(newValue, initVal, value);
             }
+            return newValue;
         }
+
+        function setMemory(ignoreTtl = false) {
+            let newValue = null;
+            if (typeof this.cache[key] === 'undefined') {
+                newValue = composeNewValue(initialValue);
+                if (!ignoreTtl) {
+                    this.setTimeToLiveForKey(key, ttl);
+                }
+            } else {
+                newValue = composeNewValue(this.cache[key]);
+            }
+            this.cache[key] = newValue;
+            return newValue;
+        }
+
+        if (this.options.useFileCache) {
+            const self = this;
+            const filepath = this.keypath(key);
+            return new Promise((resolve, reject) => {
+                const callback = (error) => {
+                    if (error) reject(error);
+                    else {
+                        if (self.options.useMemCache) {
+                            setMemory.call(self, true);
+                        }
+                        try {
+                            let item = null;
+                            let newValue = null;
+                            if (FS.existsSync(filepath)) {
+                                item = JSON.parse(FS.readFileSync(filepath));
+                                newValue = composeNewValue(item.data);
+                                item.data = newValue;
+                            } else {
+                                newValue = composeNewValue(initialValue);
+                                item = {
+                                    arriveAt: Date.now(),
+                                    data: newValue,
+                                    processTag: self.processTag,
+                                };
+                                if (typeof ttl !== 'undefined') {
+                                    item.ttl = ttl;
+                                }
+                            }
+                            FS.writeFileSync(filepath, JSON.stringify(item));
+                            self.setTimeToLiveForKey(key, ttl);
+                            resolve(newValue);
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                };
+                self.operationQueue.enqueue(callback);
+            });
+        } else if (this.options.useMemCache) {
+            return setMemory();
+        }
+        return null;
+    }
+
+    // Remove an item from an array or a property of an object
+    async remove(key, item, { type = 'index', match = 'first', length = 1 } = {}) {
+        const removeItemFromObj = (obj, prop) => {
+            if (!obj) return null;
+            let newObj = null;
+            if (Array.isArray(obj)) {
+                newObj = [];
+                Array.prototype.push.apply(newObj, obj);
+                if (type === 'index'
+                    && typeof prop === 'number' && !Number.isNaN(prop)
+                    && prop < newObj.length && length > 0
+                ) {
+                    newObj.splice(prop, length);
+                } else if (type === 'item') {
+                    let index = 0;
+                    while (index >= 0) {
+                        index = newObj.indexOf(prop);
+                        if (index >= 0) {
+                            newObj.splice(index, 1);
+                        }
+                        if (match !== 'all') break;
+                    }
+                }
+            } else if (typeof obj === 'object' && typeof prop === 'string') {
+                newObj = Object.assign({}, obj);
+                if (typeof newObj[prop] !== 'undefined') {
+                    delete newObj[prop];
+                }
+            }
+            return newObj;
+        };
+        if (this.options.useFileCache) {
+            const self = this;
+            const filepath = this.keypath(key);
+            return new Promise((resolve, reject) => {
+                const callback = (error) => {
+                    if (error) reject(error);
+                    else {
+                        try {
+                            let newValue = null;
+                            if (FS.existsSync(filepath)) {
+                                const obj = JSON.parse(FS.readFileSync(filepath));
+                                newValue = removeItemFromObj(obj, item);
+                                if (self.options.useMemCache) {
+                                    self.cache[key] = newValue;
+                                }
+                            } else if (typeof self.cache[key] !== 'undefined') {
+                                delete self.cache[key];
+                            }
+                            resolve(newValue);
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                };
+                self.operationQueue.enqueue(callback);
+            });
+        } else if (this.options.useMemCache) {
+            return removeItemFromObj(this.cache[key], item);
+        }
+        return null;
     }
 }
 

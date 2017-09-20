@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "scripts": {
     "debugOne": "node ./debug/singleThread",
-    "debug": "pm2 flush && pm2 kill && pm2 start pm2-app.config.js --only debug",
+    "debug": "pm2 flush && pm2 kill && pm2 start pm2-app.config.js --only debug && pm2 logs",
     "testOne": "mocha ./test/singleThread",
     "test": "pm2 start mocha ./test -i 0"
   },

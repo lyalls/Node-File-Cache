@@ -111,12 +111,12 @@ class OperationQueueInFile {
                         );
                     }
                 };
-                removeQueueFile();
                 if (this.queue.length > 0) {
                     // Process the job
                     const cb = this.dequeue();
                     cb();
                 }
+                removeQueueFile();
             }
         }
     }
