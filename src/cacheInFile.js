@@ -26,7 +26,7 @@ const originalKey = (safeKey) => {
 };
 
 class CacheInFile {
-    constructor(options) {
+    constructor(options = {}) {
         this.options = Object.assign({
             workdir: PATH.join(process.cwd(), 'tmp'),
             useMemCache: false,
@@ -61,7 +61,11 @@ class CacheInFile {
     async init() {
         if (!this.operationQueue) {
             const OperationQueueClass = this.operationQueueClass;
-            this.operationQueue = new OperationQueueClass(this.operationQueueOptions);
+            const options = Object.assign({}, this.operationQueueOptions);
+            if (!options.workdir) {
+                options.workdir = this.options.workdir;
+            }
+            this.operationQueue = new OperationQueueClass(options);
             if (typeof this.operationQueue.init === 'function') {
                 this.processTag = await this.operationQueue.init();
             } else {
