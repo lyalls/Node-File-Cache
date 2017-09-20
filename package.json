@@ -20,6 +20,7 @@
     "request": "^2.79.0",
     "should": "^11.2.1"
   },
+  "keywords": ["cache", "file", "multi-processes", "competition", "simultaneity", "multi-threads", "disk"],
   "dependencies": {},
   "repository": "git@github.com:lyalls/Node-File-Cache.git",
   "author": {
