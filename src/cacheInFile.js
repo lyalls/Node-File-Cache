@@ -316,7 +316,7 @@ class CacheInFile {
                 self.operationQueue.enqueue(callback);
             });
         } else if (this.options.useMemCache) {
-            return setMemory();
+            return setMemory.call(this);
         }
         return null;
     }
